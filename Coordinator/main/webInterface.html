@@ -1,0 +1,249 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zigbee Color Light Control</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; margin: 0; padding: 20px; background-color: #eef2f6; color: #333; }
+        .container { max-width: 600px; margin: 20px auto; padding: 30px; background-color: #fff; border-radius: 12px; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1); }
+        h2 { color: #4a5568; margin-bottom: 25px; border-bottom: 2px solid #edf2f7; padding-bottom: 10px; }
+        .control-group { margin-bottom: 20px; padding: 15px; border: 1px solid #e2e8f0; border-radius: 8px; }
+        .control-group label { display: block; margin-bottom: 8px; font-weight: bold; color: #4a5568; }
+
+        /* Buttons */
+        button { 
+            padding: 10px 15px; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-weight: 600;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        #open { background-color: #48bb78; color: white; margin-right: 10px; }
+        #open:hover { background-color: #38a169; transform: translateY(-1px); }
+        #close { background-color: #f56565; color: white; }
+        #close:hover { background-color: #e53e3e; transform: translateY(-1px); }
+        #toggle { background-color: #4299e1; color: white; padding: 12px 25px; font-size: 16px; margin-top: 15px; width: 100%; }
+        #toggle:hover { background-color: #3182ce; transform: translateY(-1px); }
+
+        /* Sliders */
+        input[type="range"] {
+            width: 100%;
+            height: 10px;
+            -webkit-appearance: none;
+            background: #e2e8f0;
+            border-radius: 5px;
+            margin-top: 5px;
+        }
+
+        /* Brightness Slider Styling */
+        #levelRange {
+            background: linear-gradient(to right, #ccc 0%, #fffc94 100%);
+        }
+        
+        /* Hue Slider Styling (Spectrum) */
+        #hueRange {
+            background: linear-gradient(to right,
+                #ff0000 0%, #ffff00 17%, #00ff00 33%, #00ffff 50%, 
+                #0000ff 67%, #ff00ff 83%, #ff0000 100%);
+        }
+
+        /* Thumb Styling (for Range) */
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #4299e1;
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Status & Log */
+        #status { margin-bottom: 15px; padding: 10px; border: 1px solid #cbd5e0; border-radius: 8px; background-color: #f7fafc; font-size: 0.9em; }
+        #deviceName { margin-top: 15px; font-weight: bold; color: #4299e1; font-size: 1.1em; }
+        .log-message { border-left: 4px solid #48bb78; padding: 10px; margin-top: 10px; background-color: #f0fff4; border-radius: 4px; }
+        .modal { /* Simple modal for alerts */
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.5); display: flex; justify-content: center; align-items: center; z-index: 1000;
+        }
+        .modal-content {
+            background: white; padding: 20px; border-radius: 8px; text-align: center; box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Zigbee Color Light Control</h2>
+        
+        <div id='status'>Loading status...</div>
+        
+        <div class="control-group">
+            <label>Network Management</label>
+            <button id='open'>Open network (180s)</button>
+            <button id='close'>Close network</button>
+        </div>
+
+        <div id='deviceName'>No device paired yet.</div>
+
+        <button id='toggle' name="sort_addr">Toggle Device ON/OFF</button>
+
+        <div class="control-group">
+            <label for="levelRange">Brightness Control (Level: <span id="currentLevel">127</span>)</label>
+            <input type="range" id="levelRange" min="0" max="254" value="127">
+        </div>
+
+        <div class="control-group">
+            <label for="hueRange">Color Control (Hue: <span id="currentHue">0</span>)</label>
+            <!-- Hue ranges from 0 (Red) to 254 (Red) -->
+            <input type="range" id="hueRange" min="0" max="254" value="0">
+        </div>
+
+        <h3>Event Log</h3>
+        <div id='eventLog'></div>
+
+        <!-- Custom Alert Modal -->
+        <div id="customModal" class="modal" style="display:none;">
+            <div class="modal-content">
+                <p id="modalMessage">Message content</p>
+                <button onclick="document.getElementById('customModal').style.display='none'">OK</button>
+            </div>
+        </div>
+
+    </div>
+
+<script>
+    let current_short_addr = null;
+    let current_level = 127;
+    let current_hue = 0;
+    
+    // Custom Alert replacement
+    function showMessage(message) {
+        const modal = document.getElementById('customModal');
+        document.getElementById('modalMessage').innerText = message;
+        modal.style.display = 'flex';
+    }
+
+    // --- Status and Control Functions ---
+
+    async function getStatus(){
+        try {
+            const r = await fetch('/api/status'); 
+            const j = await r.json();
+            document.getElementById('status').innerText = 'PAN ID: ' + j.pan_id + ' | Channel: ' + j.channel + ' | Short Addr: ' + j.short_addr;
+        } catch(e) {
+            document.getElementById('status').innerText = 'Error fetching status';
+            console.error("Error fetching status:", e);
+        }
+    }
+
+    // --- Zigbee API Functions ---
+
+    async function setDeviceLevel(level) {
+        if (!current_short_addr) return showMessage("Please pair a device first.");
+        
+        const addr_hex = current_short_addr.replace('0x', '');
+        // New API endpoint for level control
+        await fetch(`/api/setDeviceLevel?sad=${addr_hex}&level=${level}`, { method: 'PUT' });
+        console.log(`Sent level command (${level}) to ${current_short_addr}`);
+        current_level = level;
+    }
+
+    async function setDeviceHue(hue) {
+        if (!current_short_addr) return showMessage("Please pair a device first.");
+        
+        const addr_hex = current_short_addr.replace('0x', '');
+        // New API endpoint for color control (Hue)
+        await fetch(`/api/setDeviceHue?sad=${addr_hex}&hue=${hue}`, { method: 'PUT' });
+        console.log(`Sent hue command (${hue}) to ${current_short_addr}`);
+        current_hue = hue;
+    }
+
+    // --- Event Listeners ---
+
+    document.getElementById('open').addEventListener('click', async () => {
+        await fetch('/api/permit?t=180', { method: 'PUT' }); 
+        getStatus();
+    });
+
+    document.getElementById('close').addEventListener('click', async () => {
+        await fetch('/api/permit', { method: 'DELETE' }); 
+        getStatus();
+    });
+
+    document.getElementById('toggle').addEventListener('click', async () => {
+        if (!current_short_addr) {
+            showMessage("Please pair a device first.");
+            return;
+        }
+        const addr_hex = current_short_addr.replace('0x', '');
+        // Existing ON/OFF toggle endpoint
+        await fetch('/api/endDeviceLightToggle?sad=' + addr_hex, { method: 'GET' }); 
+        console.log(`Sent toggle command to ${current_short_addr}`);
+    });
+
+    document.getElementById('levelRange').addEventListener('input', (e) => {
+        const level = parseInt(e.target.value);
+        document.getElementById('currentLevel').innerText = level;
+        // Debounce or use 'change' for less frequent updates, but 'input' is better for visual feedback
+        setDeviceLevel(level); 
+    });
+
+    document.getElementById('hueRange').addEventListener('input', (e) => {
+        const hue = parseInt(e.target.value);
+        document.getElementById('currentHue').innerText = hue;
+        // Send command for hue change
+        setDeviceHue(hue);
+    });
+    
+    // --- Initialization ---
+
+    // Initial status check and periodic updates
+    getStatus(); 
+    setInterval(getStatus, 5000);
+
+    // --- SSE Client Initialization (Corrected) ---
+
+      async function setupSSE() {
+        // const eventSource = new EventSource("/events");
+        const eventLog = document.getElementById('eventLog');
+
+        const r= await fetch('/api/events',{method:'GET'}); const j=await r.json();
+       console.log('Received data:', j);
+           const data = j;
+
+     
+            console.log("SSE data received:", data);
+            try {
+
+                if (data.type === 'device_paired') {
+                    current_short_addr = data.short_addr;
+                     document.getElementById('pairedmessage')?.remove();
+                   const message = document.createElement('p');
+                   const device_name = document.getElementById('deviceName');
+                  device_name.innerHTML = `${data.deviceName}`;
+                   message.id='pairedmessage';
+                   message.innerHTML = `✅ **NEW DEVICE PAIRED:** Short Address: **${data.short_addr}**`;
+                   eventLog.prepend(message); 
+                   sort_addr = data.short_addr;
+                }
+            } catch (e) {
+                console.error('Error parsing SSE data:', e);
+            }
+        };
+
+        // eventSource.onerror = function(err) {
+        //     console.error("EventSource failed:", err);
+        //     // Attempt to reconnect after a delay
+        //     eventSource.close();
+        //     setTimeout(setupSSE, 3000);
+        // };
+    
+
+    // Start listening for Server-Sent Events
+    setInterval(setupSSE,5000);
+    
+</script>
+</body>
+</html>
